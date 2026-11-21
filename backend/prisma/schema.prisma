@@ -1,0 +1,241 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// SQLite doesn't support enums — using String with app-level validation
+// Role values: TRAINING_CENTRE | DISTRICT_OFFICER | QUALITY_TEAM | STATE_OFFICER
+// BatchStatus: DRAFT | SUBMITTED | DISTRICT_REVIEW | DISTRICT_APPROVED | QUALITY_REVIEW | QUALITY_APPROVED | STATE_REVIEW | APPROVED | REJECTED | SENT_BACK | OVERDUE
+// ApprovalDecision: APPROVED | REJECTED | SENT_BACK
+// CertificateStatus: PENDING | GENERATED | DELIVERED | REVOKED | FAILED
+
+model User {
+  id           String  @id @default(cuid())
+  name         String
+  email        String  @unique
+  passwordHash String
+  role         String  // Role enum as String
+  districtId   String?
+  centreId     String?
+  isActive     Boolean @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  district         District?       @relation(fields: [districtId], references: [id])
+  centre           TrainingCentre? @relation(fields: [centreId], references: [id])
+  approvals        Approval[]
+  qualityReviews   QualityReview[]
+  auditLogs        AuditLog[]
+  submittedBatches Batch[]         @relation("BatchSubmitter")
+
+  @@index([email])
+  @@index([role])
+}
+
+model District {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  code      String   @unique
+  createdAt DateTime @default(now())
+
+  users      User[]
+  batches    Batch[]
+  candidates Candidate[]
+
+  @@index([code])
+}
+
+model TrainingCentre {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  address   String?
+  createdAt DateTime @default(now())
+
+  users   User[]
+  batches Batch[]
+
+  @@index([code])
+}
+
+model Batch {
+  id               String   @id @default(cuid())
+  batchCode        String   @unique
+  centreId         String
+  districtId       String
+  submittedById    String
+  status           String   @default("DRAFT")
+  courseName       String
+  totalCandidates  Int      @default(0)
+  submittedAt      DateTime?
+  approvedAt       DateTime?
+  rejectionReason  String?
+  sendBackReason   String?
+  isOverdue        Boolean  @default(false)
+  overdueAt        DateTime?
+  overdueAlertSent Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  centre        TrainingCentre @relation(fields: [centreId], references: [id])
+  district      District       @relation(fields: [districtId], references: [id])
+  submittedBy   User           @relation("BatchSubmitter", fields: [submittedById], references: [id])
+  candidates    Candidate[]
+  approvals     Approval[]
+  qualityReview QualityReview?
+  stateReview   StateReview?
+  certificates  Certificate[]
+  auditLogs     AuditLog[]
+
+  @@index([status])
+  @@index([districtId])
+  @@index([centreId])
+  @@index([submittedAt])
+}
+
+model Candidate {
+  id             String   @id @default(cuid())
+  batchId        String
+  districtId     String
+  fullName       String
+  email          String
+  mobile         String
+  dateOfBirth    DateTime
+  gender         String
+  courseName     String
+  trainingCentre String
+  completionDate DateTime
+  rowNumber      Int
+  createdAt      DateTime @default(now())
+
+  batch       Batch        @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  district    District     @relation(fields: [districtId], references: [id])
+  certificate Certificate?
+
+  @@unique([batchId, email])
+  @@unique([batchId, mobile])
+  @@index([batchId])
+  @@index([email])
+}
+
+model Approval {
+  id        String   @id @default(cuid())
+  batchId   String
+  officerId String
+  decision  String   // ApprovalDecision as String
+  reason    String?
+  createdAt DateTime @default(now())
+
+  batch   Batch @relation(fields: [batchId], references: [id])
+  officer User  @relation(fields: [officerId], references: [id])
+
+  @@unique([batchId, officerId])
+  @@index([batchId])
+  @@index([officerId])
+}
+
+model QualityReview {
+  id         String   @id @default(cuid())
+  batchId    String   @unique
+  reviewerId String
+  decision   String   // ApprovalDecision as String
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  batch    Batch @relation(fields: [batchId], references: [id])
+  reviewer User  @relation(fields: [reviewerId], references: [id])
+
+  @@index([batchId])
+}
+
+model StateReview {
+  id        String   @id @default(cuid())
+  batchId   String   @unique
+  officerId String
+  decision  String   // ApprovalDecision as String
+  reason    String?
+  createdAt DateTime @default(now())
+
+  batch Batch @relation(fields: [batchId], references: [id])
+}
+
+model Certificate {
+  id                String    @id @default(cuid())
+  certificateNumber String    @unique
+  batchId           String
+  candidateId       String    @unique
+  status            String    @default("PENDING")
+  pdfPath           String?
+  pdfUrl            String?
+  issuedAt          DateTime?
+  revokedAt         DateTime?
+  revocationReason  String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  batch      Batch             @relation(fields: [batchId], references: [id])
+  candidate  Candidate         @relation(fields: [candidateId], references: [id])
+  deliveries DeliveryAttempt[]
+
+  @@index([certificateNumber])
+  @@index([batchId])
+  @@index([status])
+}
+
+model DeliveryAttempt {
+  id            String    @id @default(cuid())
+  certificateId String
+  attemptNumber Int
+  status        String
+  errorMessage  String?
+  deliveredAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  certificate Certificate @relation(fields: [certificateId], references: [id])
+
+  @@index([certificateId])
+  @@unique([certificateId, attemptNumber])
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  userId        String
+  userRole      String
+  action        String
+  entityType    String
+  entityId      String
+  previousState String?
+  newState      String?
+  reason        String?
+  requestId     String?
+  batchId       String?
+  metadata      String?  // JSON stored as string for SQLite
+  createdAt     DateTime @default(now())
+
+  user  User   @relation(fields: [userId], references: [id])
+  batch Batch? @relation(fields: [batchId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([createdAt])
+  @@index([batchId])
+}
+
+model Notification {
+  id         String   @id @default(cuid())
+  userId     String
+  title      String
+  message    String
+  type       String
+  entityId   String?
+  entityType String?
+  read       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([read])
+}

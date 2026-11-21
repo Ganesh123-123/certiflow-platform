@@ -1,0 +1,117 @@
+version: '3.9'
+
+services:
+  # ─── Infrastructure ───────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: certiflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: certiflow
+      POSTGRES_PASSWORD: certiflow123
+      POSTGRES_DB: certiflow
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U certiflow -d certiflow']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: certiflow-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Backend ──────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: certiflow-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://certiflow:certiflow123@postgres:5432/certiflow
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: certiflow-hackathon-jwt-secret-min-32-characters-change-in-prod
+      JWT_EXPIRES_IN: 24h
+      FRONTEND_URL: http://localhost:5173
+      UPLOAD_DIR: /app/uploads
+      CERTIFICATE_BASE_URL: http://localhost:3001
+      PUBLIC_VERIFY_URL: http://localhost:5173/verify
+      MAX_FILE_SIZE: 10485760
+      BCRYPT_ROUNDS: 10
+      RATE_LIMIT_WINDOW_MS: 900000
+      RATE_LIMIT_MAX: 100
+      OVERDUE_THRESHOLD_HOURS: 24
+      QUALITY_REVIEW_THRESHOLD: 50
+      WHATSAPP_SUCCESS_RATE: '0.7'
+      WHATSAPP_MAX_RETRIES: '5'
+    ports:
+      - '3001:3001'
+    volumes:
+      - certificate_uploads:/app/uploads/certificates
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3001/health || exit 1']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ─── Seed (one-shot) ──────────────────────────────────────────────────
+  seed:
+    image: node:20-alpine
+    container_name: certiflow-seed
+    working_dir: /app
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://certiflow:certiflow123@postgres:5432/certiflow
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: certiflow-hackathon-jwt-secret-min-32-characters-change-in-prod
+      UPLOAD_DIR: /app/uploads
+      CERTIFICATE_BASE_URL: http://localhost:3001
+      PUBLIC_VERIFY_URL: http://localhost:5173/verify
+    volumes:
+      - ./backend:/app
+    command: ["sh", "-c", "npm install --silent && npx prisma generate && npx ts-node --transpile-only prisma/seed.ts"]
+    restart: 'no'
+
+  # ─── Frontend ─────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: certiflow-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - '5173:80'
+    environment:
+      VITE_API_URL: http://localhost:3001
+
+volumes:
+  postgres_data:
+  redis_data:
+  certificate_uploads:
